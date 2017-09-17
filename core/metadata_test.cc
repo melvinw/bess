@@ -253,7 +253,7 @@ TEST_F(MetadataTest, MultipeAttrComplexPipe) {
       if (attr.mode != Attribute::AccessMode::kRead) {
         mt_offset_t offset = m->attr_offset(i);
         if (offset < 0) {
-          EXPECT_EQ(m, mods[6]);
+          EXPECT_EQ(mods[6], m);
           EXPECT_EQ(1, i);
           EXPECT_STREQ("foo", attr.name.c_str());
         } else {

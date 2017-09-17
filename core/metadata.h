@@ -62,7 +62,6 @@ static_assert(kMetadataTotalSize <= SIZE_MAX,
 
 // Normal offset values are 0 or a positive value.
 typedef int8_t mt_offset_t;
-typedef int16_t scope_id_t;
 
 // No downstream module reads the attribute, so the module can skip writing.
 static const mt_offset_t kMetadataOffsetNoWrite = -1;
@@ -86,39 +85,28 @@ struct Attribute {
   mutable int scope_id;
 };
 
-typedef std::string attr_id_t;
-
 class ScopeComponent {
  public:
-  ScopeComponent()
-      : attr_id_(),
-        size_(),
+  ScopeComponent(const Attribute &attr)
+      : attr_(attr),
         offset_(),
-        scope_id_(),
+        scope_id_(-1),
         assigned_(),
-        invalid_(),
         modules_(),
         degree_() {}
 
   ~ScopeComponent() {}
 
-  const attr_id_t &attr_id() const { return attr_id_; }
-  void set_attr_id(attr_id_t id) { attr_id_ = id; }
-
-  int size() const { return size_; }
-  void set_size(int size) { size_ = size; }
+  const Attribute &attr() const { return attr_; }
 
   mt_offset_t offset() const { return offset_; }
   void set_offset(mt_offset_t offset) { offset_ = offset; }
 
-  scope_id_t scope_id() const { return scope_id_; }
-  void set_scope_id(scope_id_t id) { scope_id_ = id; }
+  int scope_id() const { return scope_id_; }
+  void set_scope_id(int id) { scope_id_ = id; }
 
   bool assigned() const { return assigned_; }
   void set_assigned(bool assigned) { assigned_ = assigned; }
-
-  bool invalid() const { return invalid_; }
-  void set_invalid(bool invalid) { invalid_ = invalid; }
 
   const std::set<Module *> &modules() const { return modules_; }
   void add_module(Module *m) { modules_.insert(m); }
@@ -127,29 +115,21 @@ class ScopeComponent {
   int degree() const { return degree_; }
   void incr_degree() { degree_++; }
 
-  bool DisjointFrom(const ScopeComponent &rhs);
+  bool DisjointFrom(const ScopeComponent &rhs) const;
 
  private:
-  /* identification fields */
-  attr_id_t attr_id_;
-  int size_;
+  Attribute attr_;
   mt_offset_t offset_;
-  scope_id_t scope_id_;
+  int scope_id_;
 
-  /* computation state fields */
   bool assigned_;
-  bool invalid_;
   std::set<Module *> modules_;
   int degree_;
 };
 
 class Pipeline {
  public:
-  Pipeline()
-      : scope_components_(),
-        module_scopes_(),
-        module_components_(),
-        registered_attrs_() {}
+  Pipeline() : scopes_(), registered_attrs_() {}
 
   // Main entry point for calculating metadata offsets.
   int ComputeMetadataOffsets();
@@ -163,10 +143,6 @@ class Pipeline {
  private:
   friend class MetadataTest;
 
-  // Allocate and initiliaze scope component storage.
-  // Returns 0 on sucess, -errno on failure.
-  int PrepareMetadataComputation();
-
   void CleanupMetadataComputation();
 
   // Debugging tool.
@@ -175,35 +151,11 @@ class Pipeline {
   // Add a module to the current scope component.
   void AddModuleToComponent(Module *m, const struct Attribute *attr);
 
-  // Returns a pointer to an attribute if it's contained within a module.
-  const struct Attribute *FindAttr(Module *m,
-                                   const struct Attribute *attr) const;
-
-  // Traverses module graph upstream to help identify a scope component.
-  void TraverseUpstream(Module *m, const struct Attribute *attr);
-
-  // Traverses module graph downstream to help identify a scope component.
-  // Returns 0 if module is part of the scope component, -1 if not.
-  int TraverseDownstream(Module *m, const struct Attribute *attr);
-
-  // Wrapper for identifying scope components.
-  void IdentifySingleScopeComponent(Module *m, const struct Attribute *attr);
-
-  // Given a module that writes an attr, identifies the corresponding scope
-  // component.
-  void IdentifyScopeComponent(Module *m, const struct Attribute *attr);
-
   void FillOffsetArrays();
   void AssignOffsets();
   void ComputeScopeDegrees();
 
-  std::vector<ScopeComponent> scope_components_;
-
-  // Maps modules to the
-  std::map<const Module *, scope_id_t> module_scopes_;
-
-  // Maps modules to the scope componenets they belong to.
-  std::map<const Module *, scope_id_t *> module_components_;
+  std::vector<ScopeComponent> scopes_;
 
   // Keeps track of the attributes used by modules in this pipeline
   // count(=int) represents how many modules registered the attribute, and the
