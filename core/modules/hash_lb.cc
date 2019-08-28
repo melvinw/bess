@@ -33,40 +33,9 @@
 #include <utility>
 #include <vector>
 
-static inline uint32_t hash_16(uint16_t val, uint32_t init_val) {
-#if __x86_64
-  return crc32c_sse42_u16(val, init_val);
-#else
-  return crc32c_2bytes(val, init_val);
-#endif
-}
+#include "../utils/hashing.h"
 
-static inline uint32_t hash_32(uint32_t val, uint32_t init_val) {
-#if __x86_64
-  return crc32c_sse42_u32(val, init_val);
-#else
-  return crc32c_1word(val, init_val);
-#endif
-}
-
-/* Returns a value in [0, range) as a function of an opaque number.
- * Also see utils/random.h */
-static inline uint16_t hash_range(uint32_t hashval, uint16_t range) {
-#if 1
-  union {
-    uint64_t i;
-    double d;
-  } tmp;
-
-  /* the resulting number is 1.(b0)(b1)..(b31)00000..00 */
-  tmp.i = 0x3ff0000000000000ull | (static_cast<uint64_t>(hashval) << 20);
-
-  return (tmp.d - 1.0) * range;
-#else
-  /* This IDIV instruction is significantly slower */
-  return hashval % range;
-#endif
-}
+using bess::utils::hash_range;
 
 static inline int is_valid_gate(gate_idx_t gate) {
   return (gate < MAX_GATES || gate == DROP_GATE);
@@ -170,16 +139,7 @@ inline void HashLB::DoProcessBatch<HashLB::Mode::kL2>(
   int cnt = batch->cnt();
   for (int i = 0; i < cnt; i++) {
     bess::Packet *snb = batch->pkts()[i];
-    uint16_t *parts = snb->head_data<uint16_t *>();
-    uint16_t sum = 0;
-
-    for (int j = 0; j < 6; j++) {
-      sum ^= parts[j]; /* xor with next two bytes of MAC addresses starting at
-                          offset j of Ethernet header */
-    }
-
-    uint32_t hash_val = hash_16(sum, 0);
-
+    uint32_t hash_val = bess::utils::HashPktL2(snb);
     EmitPacket(ctx, snb, gates_[hash_range(hash_val, num_gates_)]);
   }
 }
@@ -187,20 +147,10 @@ inline void HashLB::DoProcessBatch<HashLB::Mode::kL2>(
 template <>
 inline void HashLB::DoProcessBatch<HashLB::Mode::kL3>(
     Context *ctx, bess::PacketBatch *batch) {
-  /* assumes untagged packets */
-  const int ip_offset = 14;
-
   int cnt = batch->cnt();
   for (int i = 0; i < cnt; i++) {
     bess::Packet *snb = batch->pkts()[i];
-    char *head = snb->head_data<char *>();
-
-    uint32_t hash_val;
-    uint32_t v0 =
-        *(reinterpret_cast<uint32_t *>(head + ip_offset + 12));   /* src IP */
-    v0 ^= *(reinterpret_cast<uint32_t *>(head + ip_offset + 16)); /* dst IP */
-
-    hash_val = hash_32(v0, 0);
+    uint32_t hash_val = bess::utils::HashPktL3(snb);
     EmitPacket(ctx, snb, gates_[hash_range(hash_val, num_gates_)]);
   }
 }
@@ -208,27 +158,10 @@ inline void HashLB::DoProcessBatch<HashLB::Mode::kL3>(
 template <>
 inline void HashLB::DoProcessBatch<HashLB::Mode::kL4>(
     Context *ctx, bess::PacketBatch *batch) {
-  /* assumes untagged packets */
-  const int ip_offset = 14;
-
   int cnt = batch->cnt();
   for (int i = 0; i < cnt; i++) {
     bess::Packet *snb = batch->pkts()[i];
-    char *head = snb->head_data<char *>();
-    uint32_t l4_offset =
-        ip_offset + ((*(reinterpret_cast<uint8_t *>(head + ip_offset)) & 0x0F)
-                     << 2); /* ip_offset + IHL */
-    uint32_t hash_val;
-    uint32_t v0 =
-        *(reinterpret_cast<uint32_t *>(head + ip_offset + 12));   /* src IP */
-    v0 ^= *(reinterpret_cast<uint32_t *>(head + ip_offset + 16)); /* dst IP*/
-    v0 ^= *(reinterpret_cast<uint16_t *>(head + l4_offset));      /* src port */
-    v0 ^= *(reinterpret_cast<uint16_t *>(head + l4_offset + 2));  /* dst port */
-
-    v0 ^= *(reinterpret_cast<uint8_t *>(head + ip_offset + 9)); /* ip_proto */
-
-    hash_val = hash_32(v0, 0);
-
+    uint32_t hash_val = bess::utils::HashPktL4(snb);
     EmitPacket(ctx, snb, gates_[hash_range(hash_val, num_gates_)]);
   }
 }
