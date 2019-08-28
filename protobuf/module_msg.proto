@@ -767,6 +767,8 @@ message PortIncArg {
  */
 message PortOutArg {
   string port = 1; /// The portname to connect to.
+  /// If set packets will be hashed over the specified fields onto a TX queue, otherwise input gate will be used as queue selector. Valid values are: `'l2'`, `'l3'`, `'l4'`, and the empty string.
+  string tx_lb_mode = 2;
 }
 
 /**

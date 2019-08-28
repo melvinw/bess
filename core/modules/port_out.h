@@ -42,7 +42,7 @@ class PortOut final : public Module {
   static const gate_idx_t kNumIGates = MAX_GATES;
   static const gate_idx_t kNumOGates = 0;
 
-  PortOut() : Module(), port_(), queue_locks_() {
+  PortOut() : Module(), port_(), tx_lb_mode_(TxLbMode::kNone), queue_locks_() {
     max_allowed_workers_ = Worker::kMaxWorkers;
   }
 
@@ -51,13 +51,16 @@ class PortOut final : public Module {
   void DeInit() override;
 
   void ProcessBatch(Context *ctx, bess::PacketBatch *batch) override;
+  void SendBatch(bess::PacketBatch *batch, queue_t qid);
 
   std::string GetDesc() const override;
 
  private:
+  enum class TxLbMode { kL2, kL3, kL4, kNone };
   Port *port_;
 
-  mcslock_t queue_locks_[Worker::kMaxWorkers];
+  TxLbMode tx_lb_mode_;
+  mcslock_t queue_locks_[MAX_QUEUES_PER_DIR];
 };
 
 #endif  // BESS_MODULES_PORTOUT_H_

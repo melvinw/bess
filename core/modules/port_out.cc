@@ -30,6 +30,9 @@
 
 #include "port_out.h"
 #include "../utils/format.h"
+#include "../utils/hashing.h"
+
+using bess::utils::hash_range;
 
 CommandResponse PortOut::Init(const bess::pb::PortOutArg &arg) {
   const char *port_name;
@@ -51,12 +54,23 @@ CommandResponse PortOut::Init(const bess::pb::PortOutArg &arg) {
     return CommandFailure(ENODEV, "Port %s has no outgoing queue", port_name);
   }
 
+  if (arg.tx_lb_mode() == "l2") {
+    tx_lb_mode_ = TxLbMode::kL2;
+  } else if (arg.tx_lb_mode() == "l3") {
+    tx_lb_mode_ = TxLbMode::kL3;
+  } else if (arg.tx_lb_mode() == "l4") {
+    tx_lb_mode_ = TxLbMode::kL4;
+  } else if (!arg.tx_lb_mode().empty()) {
+    return CommandFailure(EINVAL,
+                          "available TX LB modes: 'l2', 'l3', 'l4', and ''");
+  }
+
   ret = port_->AcquireQueues(reinterpret_cast<const module *>(this),
                              PACKET_DIR_OUT, nullptr, 0);
 
   node_constraints_ = port_->GetNodePlacementConstraint();
 
-  for (size_t i = 0; i < Worker::kMaxWorkers; i++) {
+  for (size_t i = 0; i < MAX_QUEUES_PER_DIR; i++) {
     mcs_lock_init(&queue_locks_[i]);
   }
 
@@ -79,25 +93,23 @@ std::string PortOut::GetDesc() const {
                              port_->port_builder()->class_name().c_str());
 }
 
-void PortOut::ProcessBatch(Context *ctx, bess::PacketBatch *batch) {
+void PortOut::SendBatch(bess::PacketBatch *batch, queue_t qid) {
   Port *p = port_;
 
-  const queue_t qid = ctx->current_igate;
   mcslock_node_t me;
-  mcs_lock(&queue_locks_[qid], &me);
-
   uint64_t sent_bytes = 0;
   int sent_pkts = 0;
 
-  if (likely(qid < port_->num_queues[PACKET_DIR_OUT]) && p->conf().admin_up) {
+  mcs_lock(&queue_locks_[qid], &me);
+  if (p->conf().admin_up) {
     sent_pkts = p->SendPackets(qid, batch->pkts(), batch->cnt());
   }
 
   if (!(p->GetFlags() & DRIVER_FLAG_SELF_OUT_STATS)) {
     const packet_dir_t dir = PACKET_DIR_OUT;
 
-    for (int i = 0; i < sent_pkts; i++) {
-      sent_bytes += batch->pkts()[i]->total_len();
+    for (int j = 0; j < sent_pkts; j++) {
+      sent_bytes += batch->pkts()[j]->total_len();
     }
 
     p->queue_stats[dir][qid].packets += sent_pkts;
@@ -108,6 +120,73 @@ void PortOut::ProcessBatch(Context *ctx, bess::PacketBatch *batch) {
 
   if (sent_pkts < batch->cnt()) {
     bess::Packet::Free(batch->pkts() + sent_pkts, batch->cnt() - sent_pkts);
+  }
+}
+
+void SplitBatchL2(bess::PacketBatch *orig, bess::PacketBatch *batches,
+                  queue_t num_queues) {
+  size_t cnt = orig->cnt();
+  for (size_t i = 0; i < cnt; i++) {
+    bess::Packet *pkt = orig->pkts()[i];
+    queue_t qid = hash_range(bess::utils::HashPktL2(pkt), num_queues);
+    batches[qid].add(pkt);
+  }
+}
+
+void SplitBatchL3(bess::PacketBatch *orig, bess::PacketBatch *batches,
+                  queue_t num_queues) {
+  size_t cnt = orig->cnt();
+  for (size_t i = 0; i < cnt; i++) {
+    bess::Packet *pkt = orig->pkts()[i];
+    queue_t qid = hash_range(bess::utils::HashPktL3(pkt), num_queues);
+    batches[qid].add(pkt);
+  }
+}
+
+void SplitBatchL4(bess::PacketBatch *orig, bess::PacketBatch *batches,
+                  queue_t num_queues) {
+  size_t cnt = orig->cnt();
+  for (size_t i = 0; i < cnt; i++) {
+    bess::Packet *pkt = orig->pkts()[i];
+    queue_t qid = hash_range(bess::utils::HashPktL4(pkt), num_queues);
+    batches[qid].add(pkt);
+  }
+}
+
+void PortOut::ProcessBatch(Context *ctx, bess::PacketBatch *batch) {
+  const queue_t num_queues = port_->num_queues[PACKET_DIR_OUT];
+
+  if (tx_lb_mode_ == TxLbMode::kNone) {
+    const queue_t qid = hash_range(ctx->current_igate, num_queues);
+    SendBatch(batch, qid);
+    return;
+  }
+
+  bess::PacketBatch batches[num_queues];
+  for (int i = 0; i < num_queues; i++) {
+    batches[i].clear();
+  }
+
+  switch (tx_lb_mode_) {
+    case TxLbMode::kL2:
+      SplitBatchL2(batch, batches, num_queues);
+      break;
+    case TxLbMode::kL3:
+      SplitBatchL3(batch, batches, num_queues);
+      break;
+    case TxLbMode::kL4:
+      SplitBatchL4(batch, batches, num_queues);
+      break;
+    default:
+      DCHECK(0);
+  }
+  batch->clear();
+
+  for (size_t i = 0; i < num_queues; i++) {
+    if (batches[i].empty()) {
+      continue;
+    }
+    SendBatch(&batches[i], i);
   }
 }
 
