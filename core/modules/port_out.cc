@@ -56,14 +56,8 @@ CommandResponse PortOut::Init(const bess::pb::PortOutArg &arg) {
 
   node_constraints_ = port_->GetNodePlacementConstraint();
 
-  max_allowed_workers_ = port_->num_queues[PACKET_DIR_OUT];
-
-  for (queue_t i = 0; i < max_allowed_workers_; i++) {
-    available_queues_.push_back(i);
-  }
-
   for (size_t i = 0; i < Worker::kMaxWorkers; i++) {
-    worker_queues_[i] = -1;
+    mcs_lock_init(&queue_locks_[i]);
   }
 
   if (ret < 0) {
@@ -88,7 +82,9 @@ std::string PortOut::GetDesc() const {
 void PortOut::ProcessBatch(Context *ctx, bess::PacketBatch *batch) {
   Port *p = port_;
 
-  const queue_t qid = worker_queues_[ctx->wid];
+  const queue_t qid = ctx->current_igate;
+  mcslock_node_t me;
+  mcs_lock(&queue_locks_[qid], &me);
 
   uint64_t sent_bytes = 0;
   int sent_pkts = 0;
@@ -108,40 +104,11 @@ void PortOut::ProcessBatch(Context *ctx, bess::PacketBatch *batch) {
     p->queue_stats[dir][qid].dropped += (batch->cnt() - sent_pkts);
     p->queue_stats[dir][qid].bytes += sent_bytes;
   }
+  mcs_unlock(&queue_locks_[qid], &me);
 
   if (sent_pkts < batch->cnt()) {
     bess::Packet::Free(batch->pkts() + sent_pkts, batch->cnt() - sent_pkts);
   }
-}
-
-int PortOut::OnEvent(bess::Event e) {
-  if (e != bess::Event::PreResume) {
-    return -ENOTSUP;
-  }
-
-  const std::vector<bool> &actives = active_workers();
-
-  // Reclaim queues from workers that have been detached from this PortOut since
-  // the last resume.
-  for (size_t i = 0; i < Worker::kMaxWorkers; i++) {
-    if (!actives[i]) {
-      if (worker_queues_[i] >= 0) {
-        available_queues_.push_back(worker_queues_[i]);
-      }
-      worker_queues_[i] = -1;
-    }
-  }
-
-  // Assign remaining queues to any newly attached workers.
-  for (size_t i = 0; i < Worker::kMaxWorkers; i++) {
-    if (actives[i] && worker_queues_[i] < 0) {
-      CHECK(!available_queues_.empty());  // Should not be tripped.
-      worker_queues_[i] = available_queues_.back();
-      available_queues_.pop_back();
-    }
-  }
-
-  return 0;
 }
 
 ADD_MODULE(PortOut, "port_out", "sends pakets to a port")

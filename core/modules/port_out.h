@@ -34,6 +34,7 @@
 #include "../module.h"
 #include "../pb/module_msg.pb.h"
 #include "../port.h"
+#include "../utils/mcslock.h"
 #include "../worker.h"
 
 class PortOut final : public Module {
@@ -41,7 +42,9 @@ class PortOut final : public Module {
   static const gate_idx_t kNumIGates = MAX_GATES;
   static const gate_idx_t kNumOGates = 0;
 
-  PortOut() : Module(), port_(), available_queues_(), worker_queues_() {}
+  PortOut() : Module(), port_(), queue_locks_() {
+    max_allowed_workers_ = Worker::kMaxWorkers;
+  }
 
   CommandResponse Init(const bess::pb::PortOutArg &arg);
 
@@ -49,16 +52,12 @@ class PortOut final : public Module {
 
   void ProcessBatch(Context *ctx, bess::PacketBatch *batch) override;
 
-  int OnEvent(bess::Event e) override;
-
   std::string GetDesc() const override;
 
  private:
   Port *port_;
 
-  std::vector<queue_t> available_queues_;
-
-  int worker_queues_[Worker::kMaxWorkers];
+  mcslock_t queue_locks_[Worker::kMaxWorkers];
 };
 
 #endif  // BESS_MODULES_PORTOUT_H_
